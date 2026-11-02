@@ -1,0 +1,265 @@
+<header class="site-header">
+  <a class="brand" href="#main" aria-label="D&D Rune Generator, vai al generatore">
+    <span class="brand-mark" aria-hidden="true">ᚱ</span>
+    <span><strong>Rune Generator</strong><small>Grammatica arcana per D&amp;D 2024</small></span>
+  </a>
+  <p class="header-note">Ogni segno ha un significato.</p>
+</header>
+
+<main id="main" class="page-shell">
+  <section class="intro" aria-labelledby="page-title">
+    <p class="eyebrow">Officina dei sigilli</p>
+    <h1 id="page-title">Una spell.<br /><em>La sua runa.</em></h1>
+    <p>
+      Scegli un incantesimo o modifica i suoi parametri. La scuola occupa il centro, il livello
+      traccia una figura (cerchio o poligono) e l'area un'altra figura più ampia. I raggi indicano
+      la gittata, la fascia esterna il tempo di lancio e il colore il tipo di danno. La legenda ti
+      permette di leggere ogni segno.
+    </p>
+  </section>
+
+  <section class="workspace" aria-label="Generatore di rune">
+    <aside class="editor-panel" aria-labelledby="editor-title">
+      <div class="panel-heading">
+        <div>
+          <p class="section-number">I</p>
+          <h2 id="editor-title">Definisci la spell</h2>
+        </div>
+        <button class="text-button" type="button" (click)="resetSpell()">Ripristina</button>
+      </div>
+
+      <app-spell-search
+        [spells]="catalog.spells"
+        [selectedId]="selectedSpellId()"
+        (spellSelected)="selectSpell($event)"
+      />
+
+      <div class="field-grid">
+        <label class="field"
+          ><span>Livello</span
+          ><input
+            type="number"
+            min="0"
+            max="9"
+            [value]="runeParams().level"
+            (input)="setLevel($event)"
+        /></label>
+        <label class="field"
+          ><span>Scuola</span
+          ><select (change)="setSchool($event)">
+            @for (option of schoolOptions; track option.value) {
+              <option [value]="option.value" [selected]="option.value === runeParams().school">
+                {{ option.label }}
+              </option>
+            }
+          </select></label
+        >
+        <label class="field"
+          ><span>Casting time</span
+          ><select (change)="setCastingKind($event)">
+            @for (option of castingTimeOptions; track option.value) {
+              <option
+                [value]="option.value"
+                [selected]="option.value === runeParams().castingTime.kind"
+              >
+                {{ option.label }}
+              </option>
+            }
+          </select></label
+        >
+        <label class="field compact-field"
+          ><span>Istanze</span
+          ><input
+            type="number"
+            min="1"
+            max="12"
+            [value]="runeParams().instances"
+            (input)="setInstances($event)"
+          />
+          @if (runeParams().instancesInferred) {
+            <small class="inferred-note">Ricavato dalla descrizione · modificabile</small>
+          }
+        </label>
+        <label class="field"
+          ><span>Gittata</span
+          ><select (change)="setRangeKind($event)">
+            @for (option of rangeOptions; track option.value) {
+              <option [value]="option.value" [selected]="option.value === runeParams().range.kind">
+                {{ option.label }}
+              </option>
+            }
+          </select></label
+        >
+        <label class="field compact-field"
+          ><span>Distanza (ft)</span
+          ><input
+            type="number"
+            min="0"
+            max="999999"
+            [disabled]="runeParams().range.kind !== 'distance'"
+            [value]="runeParams().range.distanceFeet ?? 0"
+            (input)="setRangeDistance($event)"
+        /></label>
+        <label class="field"
+          ><span>Area</span
+          ><select (change)="setAreaShape($event)">
+            @for (option of areaOptions; track option.value) {
+              <option [value]="option.value" [selected]="option.value === runeParams().area.shape">
+                {{ option.label }}
+              </option>
+            }
+          </select>
+          @if (runeParams().area.inferred) {
+            <small class="inferred-note">Inferita dalla descrizione · modificabile</small>
+          }
+        </label>
+        <label class="field compact-field"
+          ><span>Misura (ft)</span
+          ><input
+            type="number"
+            min="0"
+            max="9999"
+            [disabled]="runeParams().area.shape === 'none'"
+            [value]="runeParams().area.sizeFeet ?? 0"
+            (input)="setAreaSize($event)"
+        /></label>
+        <label class="field field-wide"
+          ><span>Tipo di danno</span
+          ><select (change)="setDamageType($event)">
+            @for (option of damageOptions; track option.value) {
+              <option [value]="option.value" [selected]="option.value === runeParams().damageType">
+                {{ option.label }}
+              </option>
+            }
+          </select></label
+        >
+      </div>
+
+      <div class="toggle-row">
+        <label class="toggle"
+          ><input
+            type="checkbox"
+            [checked]="runeParams().concentration"
+            (change)="setConcentration($event)"
+          /><span aria-hidden="true"></span>Concentrazione</label
+        >
+        <label class="toggle"
+          ><input
+            type="checkbox"
+            [checked]="runeParams().ritual"
+            (change)="setRitual($event)"
+          /><span aria-hidden="true"></span>Rituale</label
+        >
+      </div>
+    </aside>
+  </section>
+
+  <section class="reading-area" aria-label="Lettura della runa">
+    <section class="rune-stage" aria-labelledby="rune-title">
+      <div class="stage-heading">
+        <div>
+          <p class="section-number">II</p>
+          <h2 id="rune-title">Osserva il sigillo</h2>
+        </div>
+        <button class="download-button" type="button" (click)="downloadSvg()">
+          Scarica SVG <span aria-hidden="true">↓</span>
+        </button>
+      </div>
+      <div class="rune-frame">
+        <span class="corner corner-a" aria-hidden="true"></span
+        ><span class="corner corner-b" aria-hidden="true"></span>
+        <div class="rune-preview" [innerHTML]="safePreview()"></div>
+        <p class="rune-caption">{{ selectedSpell()?.name ?? 'Runa personalizzata' }}</p>
+      </div>
+    </section>
+
+    <section class="decoder" aria-labelledby="decoder-title">
+      <div class="decoder-intro">
+        <p class="section-number">III</p>
+        <h2 id="decoder-title">Leggi la runa</h2>
+        <p id="legend-instructions">
+          Passa sopra una voce o raggiungila da tastiera per vedere il segno nella runa. Fai clic o
+          tocca per fissare l'evidenziazione; premi Esc per rimuoverla.
+          @if (guideActive()) {
+            Durante la guida la legenda è disattivata: esci dalla guida per leggere i segni.
+          }
+        </p>
+      </div>
+      <div class="stroke-guide" aria-labelledby="stroke-guide-title">
+        <div>
+          <p id="stroke-guide-title">Ordine di costruzione · dal centro al bordo</p>
+          @if (guideActive()) {
+            <p class="stroke-counter" aria-live="polite">
+              Passo {{ currentStroke() + 1 }} di {{ strokeCount() }}
+            </p>
+          } @else {
+            <p class="stroke-counter">
+              Costruisci il sigillo dal nucleo fino alla chiusura esterna.
+            </p>
+          }
+        </div>
+        <div class="guide-actions">
+          @if (guideActive()) {
+            <button type="button" (click)="previousStroke()" [disabled]="currentStroke() === 0">
+              Precedente
+            </button>
+            <button
+              type="button"
+              (click)="nextStroke()"
+              [disabled]="currentStroke() === strokeCount() - 1"
+            >
+              Successivo
+            </button>
+            <button #guideExitButton type="button" (click)="exitStrokeGuide(true)">Esci</button>
+          } @else {
+            <button #guideStartButton type="button" (click)="startStrokeGuide()">
+              Avvia guida
+            </button>
+          }
+        </div>
+      </div>
+      <p class="summary" aria-live="polite">{{ summary() }}</p>
+      <ol class="legend-list" aria-describedby="legend-instructions">
+        @for (item of explanation(); track item.layer; let index = $index) {
+          <li>
+            <button
+              type="button"
+              [class.active]="activeLayer() === item.layer"
+              [attr.aria-pressed]="pinnedLayer() === item.layer"
+              [attr.aria-disabled]="guideActive()"
+              (mouseenter)="previewHover(item.layer)"
+              (mouseleave)="previewHover(undefined)"
+              (focus)="previewFocus(item.layer)"
+              (blur)="previewFocus(undefined)"
+              (click)="togglePinnedLayer(item.layer)"
+            >
+              <span class="legend-index">{{ index + 1 }}</span>
+              <span class="legend-copy"
+                ><small>{{ item.label }}</small
+                ><strong>{{ item.value }}</strong
+                ><span>{{ item.detail }}</span>
+                @if (item.layer === 'damage') {
+                  <span
+                    class="damage-swatch"
+                    [style.background]="damageSwatch()"
+                    aria-hidden="true"
+                  ></span>
+                }
+              </span>
+            </button>
+          </li>
+        }
+      </ol>
+    </section>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <p>
+    Strumento non ufficiale. Metadati dal catalogo D&amp;D 2024, snapshot
+    {{ catalog.sourceSnapshotAt }}.
+  </p>
+  <p>
+    Le descrizioni delle spell non sono incluse. Verificare i diritti prima della pubblicazione.
+  </p>
+</footer>
