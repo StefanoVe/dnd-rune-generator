@@ -132,6 +132,7 @@ export interface RuneComposition {
 }
 
 export interface RuneRenderOptions {
+  readonly style?: 'ballpoint' | 'clean';
   readonly visibleStrokeCount?: number;
   readonly currentStroke?: number;
   readonly highlightedLayer?: RuneLayer;

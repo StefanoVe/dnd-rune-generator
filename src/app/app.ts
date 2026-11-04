@@ -58,6 +58,8 @@ export class App {
   protected readonly pinnedLayer = signal<RuneLayer | undefined>(undefined);
   protected readonly guideActive = signal(false);
   protected readonly currentStroke = signal(0);
+  protected readonly exporting = signal(false);
+  protected readonly exportError = signal('');
 
   protected readonly selectedSpell = computed(
     () => this.catalog.spells.find((spell) => spell.id === this.selectedSpellId()) ?? null,
@@ -223,15 +225,48 @@ export class App {
     this.pinnedLayer.set(undefined);
   }
 
-  protected downloadSvg(): void {
+  protected async downloadPng(): Promise<void> {
+    if (this.exporting()) return;
+    this.exporting.set(true);
+    this.exportError.set('');
+    const filename = `${this.selectedSpellId() || 'runa-arcana'}.png`;
     const svg = renderRuneSvg(this.composition());
-    const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = this.document.createElement('a');
-    link.href = url;
-    link.download = `${this.selectedSpellId() || 'runa-arcana'}.svg`;
-    link.click();
-    URL.revokeObjectURL(url);
+    const sourceUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+    let downloadUrl: string | undefined;
+    try {
+      const image = this.document.createElement('img');
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('Unable to load rune image'));
+        image.src = sourceUrl;
+      });
+      const canvas = this.document.createElement('canvas');
+      canvas.width = 1024;
+      canvas.height = 1024;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Canvas is unavailable');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((result) => {
+          if (result) resolve(result);
+          else reject(new Error('Unable to encode PNG'));
+        }, 'image/png');
+      });
+      downloadUrl = URL.createObjectURL(blob);
+      const link = this.document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      link.click();
+    } catch {
+      this.exportError.set('Impossibile esportare la runa. Riprova.');
+    } finally {
+      URL.revokeObjectURL(sourceUrl);
+      if (downloadUrl) {
+        const url = downloadUrl;
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+      this.exporting.set(false);
+    }
   }
 
   private patch(update: (params: SpellRuneParams) => SpellRuneParams): void {

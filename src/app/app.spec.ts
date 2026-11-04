@@ -220,35 +220,60 @@ describe('App', () => {
     );
   });
 
-  it('downloads the complete composition even while the guide is on its first stroke', async () => {
+  it('downloads a transparent PNG of the complete composition during the guide', async () => {
     const fixture = TestBed.createComponent(App);
     await fixture.whenStable();
     const element = fixture.nativeElement as HTMLElement;
-    let downloaded: Blob | undefined;
-    const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
-      downloaded = blob as Blob;
-      return 'blob:test-rune';
-    });
+    const png = new Blob(['png'], { type: 'image/png' });
+    const createObjectUrl = vi.spyOn(URL, 'createObjectURL')
+      .mockReturnValueOnce('blob:source-rune')
+      .mockReturnValueOnce('blob:png-rune');
     const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
-    const anchorClick = vi
-      .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(() => undefined);
+    const imageSource = vi.spyOn(HTMLImageElement.prototype, 'src', 'set')
+      .mockImplementation(function (this: HTMLImageElement) {
+        queueMicrotask(() => this.dispatchEvent(new Event('load')));
+      });
+    const drawImage = vi.fn();
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, 'getContext')
+      .mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
+    const toBlob = vi.spyOn(HTMLCanvasElement.prototype, 'toBlob')
+      .mockImplementation(function (this: HTMLCanvasElement, callback) {
+        expect(this.width).toBe(1024);
+        expect(this.height).toBe(1024);
+        callback(png);
+      });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.download).toBe('runa-arcana.png');
+        expect(this.href).toBe('blob:png-rune');
+      });
 
-    [...element.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('Avvia guida'))!
-      .click();
-    fixture.detectChanges();
-    [...element.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.textContent?.includes('Scarica SVG'))!
-      .click();
+    try {
+      [...element.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent?.includes('Avvia guida'))!
+        .click();
+      fixture.detectChanges();
+      element.querySelector<HTMLButtonElement>('.download-button')!.click();
+      await fixture.whenStable();
 
-    const svg = await downloaded!.text();
-    expect(svg.match(/data-stroke-order=/g)?.length).toBe(
-      composeRune(defaultRuneParams).strokes.length,
-    );
-    expect(svg).not.toMatch(/<(text|title|desc)\b/i);
-    createObjectUrl.mockRestore();
-    revokeObjectUrl.mockRestore();
-    anchorClick.mockRestore();
+      const svg = await (createObjectUrl.mock.calls[0][0] as Blob).text();
+      expect(svg.match(/data-stroke-order=/g)?.length).toBe(
+        composeRune(defaultRuneParams).strokes.length,
+      );
+      expect(svg).not.toMatch(/<(text|title|desc)\b/i);
+      expect(drawImage).toHaveBeenCalledWith(expect.any(HTMLImageElement), 0, 0, 1024, 1024);
+      expect(toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png');
+      expect(createObjectUrl).toHaveBeenLastCalledWith(png);
+      expect(anchorClick).toHaveBeenCalledOnce();
+      expect(revokeObjectUrl).toHaveBeenCalledWith('blob:source-rune');
+      await vi.waitFor(() => expect(revokeObjectUrl).toHaveBeenCalledWith('blob:png-rune'));
+    } finally {
+      createObjectUrl.mockRestore();
+      revokeObjectUrl.mockRestore();
+      imageSource.mockRestore();
+      getContext.mockRestore();
+      toBlob.mockRestore();
+      anchorClick.mockRestore();
+    }
   });
 });

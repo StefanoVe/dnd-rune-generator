@@ -17,7 +17,7 @@ Generatore Angular di rune concentriche deterministiche basate sui parametri deg
 | Concentrazione   | Quattro cerchi con pupilla fuori dal sigillo, sulle diagonali.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Rituale          | Quattro rombi fuori dal sigillo, sui punti cardinali.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
-L'anteprima offre una guida di costruzione dal nucleo al sigillo. L'SVG scaricato contiene la runa completa su sfondo trasparente e non contiene testo. Tutte le linee hanno lo stesso spessore; il glifo centrale è una figura piena.
+L'anteprima offre una guida di costruzione dal nucleo al sigillo. Il PNG scaricato (1024 × 1024 pixel) contiene la runa completa su sfondo trasparente e non contiene testo. Tutte le linee hanno lo stesso spessore; il glifo centrale è una figura piena.
 
 I colori mantengono almeno 3:1 di contrasto sulla carta `#eee2c5`.
 

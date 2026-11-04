@@ -1,9 +1,10 @@
+import { BALLPOINT_WIDTH, INK_OPACITY, MAX_WOBBLE, MAX_OVERSHOOT, circleWobble, GRAIN_DISPLACEMENT } from './pen';
 import { spellCatalog } from '../catalog/spell-catalog';
 import { contrastRatio, damageColors, paperColor, variableGradientStops } from './damage-colors';
 import {
   glyphPlacements,
   MAX_INSTANCES,
-  composeRune,
+  composeRune as composeStyledRune,
   describeRune,
   levelOutlineRadius,
   levelNodeRadius,
@@ -11,7 +12,7 @@ import {
   LEVEL_RADIUS,
   CORE_RADIUS,
   normalizeRuneParams,
-  renderRuneSvg,
+  renderRuneSvg as renderStyledRuneSvg,
   RUNE_SCALE,
   rangeSpokes,
   levelVertices,
@@ -24,12 +25,19 @@ import {
 } from './rune-engine';
 import {
   areaOptions,
+  castingTimeOptions,
   damageOptions,
   defaultRuneParams,
   rangeOptions,
   schoolOptions,
 } from './rune-types';
 import { schoolGlyphs } from './school-glyphs';
+
+// Existing geometry regressions exercise the exact drafting pen.
+const composeRune: typeof composeStyledRune = (params, options) =>
+  composeStyledRune(params, { ...options, style: 'clean' });
+const renderRuneSvg: typeof renderStyledRuneSvg = (params, options) =>
+  renderStyledRuneSvg(params, { ...options, style: 'clean' });
 
 describe('concentric rune engine', () => {
   it('renders identical SVG for identical and normalized parameters', () => {
@@ -298,7 +306,11 @@ describe('concentric rune engine', () => {
     const markup = composeRune(defaultRuneParams).strokes.find(
       (step) => step.layer === 'casting-time',
     )!.markup;
-    expect(markup.match(/<path d="M0 -7L0 7"/g) ?? []).toHaveLength(SCRIPT_SLOTS);
+    const root = new DOMParser().parseFromString(`<svg>${markup}</svg>`, 'image/svg+xml');
+    const copies = [...root.querySelectorAll('path')];
+    expect(copies).toHaveLength(SCRIPT_SLOTS);
+    expect(new Set(copies.map((copy) => copy.getAttribute('d'))).size).toBe(1);
+    expect(copies.every((copy) => copy.hasAttribute('transform'))).toBe(true);
     expect(markup).not.toContain('<circle');
     // At level 0 spokes cross the band: a glyph lying on a spoke is left out.
     const cantrip = {
@@ -415,5 +427,211 @@ describe('generated catalog', () => {
       ).toBeNull();
       expect(svg).not.toMatch(/<(text|title|desc)\b/i);
     }
+  });
+});
+
+describe('ballpoint rune rendering', () => {
+  it('is the default, normalized and byte-for-byte deterministic', () => {
+    const params = { ...defaultRuneParams, level: 99, instances: 99 };
+    expect(renderStyledRuneSvg(params)).toBe(renderStyledRuneSvg(normalizeRuneParams(params)));
+    expect(renderStyledRuneSvg(params)).toBe(renderStyledRuneSvg(params, { style: 'ballpoint' }));
+    expect(renderStyledRuneSvg(params)).not.toBe(renderStyledRuneSvg(params, { style: 'clean' }));
+  });
+
+  it('seeds each layer only with parameters affecting its geometry', () => {
+    const params = { ...defaultRuneParams, level: 9, concentration: true, ritual: true };
+    const original = composeStyledRune(params);
+    const changes = [
+      { params: { ...params, concentration: false }, affected: ['concentration'] },
+      { params: { ...params, ritual: false }, affected: ['ritual'] },
+      { params: { ...params, instances: 4 }, affected: ['school'] },
+      { params: { ...params, school: 'illusion' as const }, affected: ['school', 'level'] },
+      { params: { ...params, castingTime: { kind: 'hour' as const } }, affected: ['level', 'casting-time'] },
+      { params: { ...params, damageType: 'variable' as const }, affected: [] },
+      { params: { ...params, area: { ...params.area, sizeFeet: 60 } }, affected: ['range', 'casting-time'] },
+      { params: { ...params, range: { kind: 'touch' as const, distanceFeet: null } }, affected: ['range'] },
+    ];
+    for (const change of changes) {
+      const updated = composeStyledRune(change.params);
+      for (const stroke of original.strokes.filter((stroke) => !change.affected.includes(stroke.layer))) {
+        expect(updated.strokes.find((step) => step.layer === stroke.layer)?.markup).toBe(stroke.markup);
+      }
+    }
+  });
+
+  it('gives repeated casting glyphs distinct geometry and placement', () => {
+    const markup = composeStyledRune(defaultRuneParams).strokes.find((step) => step.layer === 'casting-time')!.markup;
+    const root = new DOMParser().parseFromString(`<svg>${markup}</svg>`, 'image/svg+xml');
+    const copies = [...root.documentElement.children];
+    expect(copies).toHaveLength(SCRIPT_SLOTS);
+    expect(new Set(copies.map((copy) => copy.innerHTML)).size).toBe(SCRIPT_SLOTS);
+    expect(new Set(copies.map((copy) => copy.getAttribute('transform'))).size).toBe(SCRIPT_SLOTS);
+  });
+
+  it('applies variable ink to every filled outline and school copy, preserving guide opacity', () => {
+    const params = { ...defaultRuneParams, level: 9, instances: 12, damageType: 'variable' as const };
+    const svg = renderStyledRuneSvg(params, { currentStroke: 1 });
+    expect(svg).not.toContain('fill="currentColor"');
+    expect(svg).toContain('fill="url(#rune-variable-ink)"');
+    const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    expect(root.querySelector('[data-stroke-order="1"]')?.getAttribute('opacity')).toBe('0.3');
+    expect(root.querySelector('[data-stroke-order="2"]')?.getAttribute('opacity')).toBeNull();
+    expect(root.querySelector('[data-stroke-order="3"]')?.getAttribute('opacity')).toBe('0.1');
+    expect(root.querySelector('parsererror')).toBeNull();
+    expect(svg).not.toMatch(/<(text|title|desc)\b/i);
+    expect(root.documentElement.getAttribute('aria-label')).toBe(runeSummary(params));
+  });
+});
+
+// Evaluate SVG placement transforms, including the small handwriting transforms, in order.
+function placedPoint(element: Element, point: readonly number[]): readonly number[] {
+  let [x, y] = point;
+  for (let current: Element | null = element; current; current = current.parentElement) {
+    const transforms = [...(current.getAttribute('transform') ?? '').matchAll(/(translate|rotate|scale)\(([^)]+)\)/g)].reverse();
+    for (const [, operation, args] of transforms) {
+      const values = args.trim().split(/[ ,]+/).map(Number);
+      if (operation === 'translate') { x += values[0]; y += values[1] ?? 0; }
+      if (operation === 'scale') { x *= values[0]; y *= values[1] ?? values[0]; }
+      if (operation === 'rotate') {
+        const [angle, cx = 0, cy = 0] = values;
+        const radians = angle * Math.PI / 180;
+        const dx = x - cx, dy = y - cy;
+        x = cx + dx * Math.cos(radians) - dy * Math.sin(radians);
+        y = cy + dx * Math.sin(radians) + dy * Math.cos(radians);
+      }
+    }
+  }
+  return [x, y];
+}
+
+describe('ballpoint clearances and ink', () => {
+  it('retains at least 3:1 effective ink contrast after compositing on paper', () => {
+    for (const color of [...Object.values(damageColors), ...variableGradientStops]) {
+      const effective = '#' + [1, 3, 5].map((offset) => Math.round(
+        parseInt(color.slice(offset, offset + 2), 16) * INK_OPACITY
+        + parseInt(paperColor.slice(offset, offset + 2), 16) * (1 - INK_OPACITY),
+      ).toString(16).padStart(2, '0')).join('');
+      expect(contrastRatio(effective, paperColor)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it('keeps worst-case outlines and transformed school bounds inside the viewBox and size budget', () => {
+    for (const level of [0, 2, 3, 7, 8, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
+      for (const kind of ['self', 'sight', 'unlimited'] as const) {
+        const params = { ...defaultRuneParams, level, instances: 12, concentration: true, ritual: true,
+          area: { shape, sizeFeet: 9999, inferred: false }, range: { kind, distanceFeet: null } };
+        const svg = renderStyledRuneSvg(params);
+        expect(new TextEncoder().encode(svg).length).toBeLessThan(150_000);
+        const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
+        expect(root.querySelector('parsererror')).toBeNull();
+        const points: (readonly number[])[] = [];
+        for (const path of root.querySelectorAll('path')) {
+          const d = path.getAttribute('d')!;
+          if (d === schoolGlyphs[params.school].d) {
+            const glyph = schoolGlyphs[params.school];
+            for (const x of [glyph.x, glyph.x + glyph.width]) for (const y of [glyph.y, glyph.y + glyph.height]) {
+              points.push(placedPoint(path, [x, y]));
+              // Every school copy stays inside either the core or its own vertex node.
+              const local = placedPoint(path, [x, y]);
+              const anchors = [[256, 256, CORE_RADIUS], ...levelVertices(level).map(([vx, vy]) => [vx, vy, levelNodeRadius(level)])];
+              expect(anchors.some(([cx, cy, r]) => Math.hypot(local[0] - (256 + (cx - 256) * RUNE_SCALE), local[1] - (256 + (cy - 256) * RUNE_SCALE)) < (r - (r === CORE_RADIUS ? 0 : circleWobble(r)) - BALLPOINT_WIDTH * 1.25 / RUNE_SCALE / 2) * RUNE_SCALE)).toBe(true);
+            }
+          } else {
+            for (const point of centerlinePoints(d)) points.push(placedPoint(path, point));
+          }
+        }
+        for (const circle of root.querySelectorAll('circle')) {
+          const x = Number(circle.getAttribute('cx')), y = Number(circle.getAttribute('cy')), r = Number(circle.getAttribute('r'));
+          points.push(placedPoint(circle, [x - r, y - r]), placedPoint(circle, [x + r, y + r]));
+        }
+        expect(Math.min(...points.flat())).toBeGreaterThanOrEqual(0);
+        expect(Math.max(...points.flat())).toBeLessThanOrEqual(512);
+        const outer = 268 + 10 + circleWobble(8) + MAX_OVERSHOOT + BALLPOINT_WIDTH * 1.25 / RUNE_SCALE + GRAIN_DISPLACEMENT;
+        expect(outer * RUNE_SCALE).toBeLessThan(256);
+      }
+    }
+  });
+
+  it('preserves node-to-area and spoke-to-band gaps after worst-case wobble and pressure', () => {
+    const halfWidth = BALLPOINT_WIDTH * 1.25 * 1.06 / RUNE_SCALE / 2 + GRAIN_DISPLACEMENT / 2;
+    for (const level of [7, 8, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
+      const radii = shape === 'sphere' ? [206] : [197, 207];
+      const params = { ...defaultRuneParams, level, area: { shape, sizeFeet: 9999, inferred: false } };
+      const area = composeStyledRune(params).strokes.find((step) => step.layer === 'area')!.markup;
+      const root = new DOMParser().parseFromString(`<svg>${area}</svg>`, 'image/svg+xml');
+      let minimum = Infinity;
+      for (const path of root.querySelectorAll('path')) for (const [x, y] of centerlinePoints(path.getAttribute('d')!)) {
+        for (const [vx, vy] of levelVertices(level)) minimum = Math.min(minimum, Math.hypot(x - vx, y - vy) - levelNodeRadius(level) - circleWobble(levelNodeRadius(level)) - halfWidth);
+      }
+      expect(minimum).toBeGreaterThan(0);
+      for (const r of radii) expect(r - LEVEL_RADIUS - levelNodeRadius(level) - (circleWobble(r) + circleWobble(levelNodeRadius(level)) + 2 * halfWidth)).toBeGreaterThan(0);
+      // Radial spokes normally stop at 204; glyphs start at radius 223 - 7.
+      expect(223 - 7 * 1.08 - 0.6 - 0.3 - halfWidth - (204 + 3 + halfWidth)).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('action glyph', () => {
+  it('fits its local box, takes two gestures and differs from all five other glyphs', () => {
+    const glyphPaths = castingTimeOptions.map(({ value }) => {
+      const params = { ...defaultRuneParams, castingTime: { kind: value } };
+      const markup = composeRune(params).strokes.find((step) => step.layer === 'casting-time')!.markup;
+      return new DOMParser().parseFromString(`<svg>${markup}</svg>`, 'image/svg+xml').querySelector('path')!.getAttribute('d')!;
+    });
+    expect(new Set(glyphPaths).size).toBe(6);
+    const action = glyphPaths[0];
+    expect(action.match(/M/g)).toHaveLength(2);
+    const points = [...action.matchAll(/[ML]([-\d.]+) ([-\d.]+)/g)].map((match) => match.slice(1).map(Number));
+    expect(points.length).toBeGreaterThan(4);
+    for (const [x, y] of points) { expect(Math.abs(x)).toBeLessThanOrEqual(6); expect(Math.abs(y)).toBeLessThanOrEqual(7); }
+    const level = composeRune({ ...defaultRuneParams, level: 7 }).strokes.find((step) => step.layer === 'level')!.markup;
+    const inner = [...new DOMParser().parseFromString(`<svg>${level}</svg>`, 'image/svg+xml').querySelectorAll('path[transform]')].filter((path) => path.getAttribute('fill') !== 'currentColor');
+    expect(inner).toHaveLength(12);
+    expect(inner.every((path) => path.getAttribute('d') === action)).toBe(true);
+    expect(describeRune(defaultRuneParams).find((item) => item.layer === 'casting-time')!.detail).toContain('due rami obliqui');
+  });
+});
+
+describe('ballpoint grain filter', () => {
+  it('embeds one self-contained high-frequency grain filter on the drawing group only', () => {
+    const svg = renderStyledRuneSvg(defaultRuneParams);
+    const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    expect(root.querySelectorAll('filter')).toHaveLength(1);
+    expect(root.querySelectorAll('[filter]')).toHaveLength(1);
+    const id = root.querySelector('filter')!.id;
+    expect(root.querySelector('[filter]')!.getAttribute('filter')).toBe(`url(#${id})`);
+    expect(root.querySelector('feTurbulence')!.getAttribute('baseFrequency')).toBe('1.15');
+    expect(root.querySelector('feTurbulence')!.getAttribute('numOctaves')).toBe('2');
+    expect(root.querySelector('feComposite')!.getAttribute('operator')).toBe('in');
+    expect(Number(root.querySelector('feDisplacementMap')!.getAttribute('scale'))).toBeGreaterThanOrEqual(0.6);
+    expect(renderRuneSvg(defaultRuneParams)).not.toContain('<filter');
+    const other = renderStyledRuneSvg({ ...defaultRuneParams, level: 9 });
+    expect(other).not.toContain(`id="${id}"`);
+  });
+});
+
+function centerlinePoints(d: string): readonly (readonly number[])[] {
+  let x = 0, y = 0;
+  return [...d.matchAll(/([MLl])([-\d.]+) ([-\d.]+)/g)].map((match) => {
+    const a = Number(match[2]), b = Number(match[3]);
+    x = match[1] === 'l' ? x + a : a;
+    y = match[1] === 'l' ? y + b : b;
+    return [x, y];
+  });
+}
+
+describe('ballpoint worst-case serialization', () => {
+  it('keeps the hour glyph with maximal copies, sphere and sight below 150 KB', () => {
+    const svg = renderStyledRuneSvg({
+      ...defaultRuneParams,
+      level: 9,
+      instances: 12,
+      castingTime: { kind: 'hour' },
+      area: { shape: 'sphere', sizeFeet: 9999, inferred: false },
+      range: { kind: 'sight', distanceFeet: null },
+      concentration: true,
+      ritual: true,
+    });
+    expect(new TextEncoder().encode(svg).length).toBeLessThan(150_000);
   });
 });

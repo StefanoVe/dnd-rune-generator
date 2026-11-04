@@ -19,10 +19,16 @@ const findSpell = (predicate, label) => {
   return spell;
 };
 const sheets = {
-  contact: namedIds.map((id) => ({
-    filename: id,
-    spell: findSpell((candidate) => candidate.id === id, id),
-  })),
+  contact: [
+    ...namedIds.map((id) => ({
+      filename: id,
+      spell: findSpell((candidate) => candidate.id === id, id),
+    })),
+    {
+      filename: 'action-level-7',
+      spell: { rune: { ...defaultRuneParams, level: 7, castingTime: { kind: 'action' } } },
+    },
+  ],
   schools: schoolOptions.map(({ value }) => ({
     filename: 'school-' + value,
     spell: findSpell((candidate) => candidate.rune.school === value, value),

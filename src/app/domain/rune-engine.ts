@@ -1,3 +1,4 @@
+import { ballpointPen, cleanPen, hashSeed, GRAIN_DISPLACEMENT, type Pen, type PenCommand, type Point } from './pen';
 import { damageColorNames, damageColors, variableGradientStops } from './damage-colors';
 import {
   areaOptions,
@@ -98,23 +99,21 @@ export function normalizeRuneParams(params: SpellRuneParams): SpellRuneParams {
 // ---------------------------------------------------------------------------
 // Primitives
 
-const circle = (radius: number, extra = ''): string =>
-  `<circle cx="${C}" cy="${C}" r="${radius}"${extra}/>`;
+const circle = (pen: Pen, radius: number, extra = ''): string =>
+  pen.circle([C, C], radius, extra);
 
-const line = (from: readonly [number, number], to: readonly [number, number]): string =>
-  `M${from[0]} ${from[1]}L${to[0]} ${to[1]}`;
+const line = (from: Point, to: Point): PenCommand[] => [
+  { op: 'M', at: from }, { op: 'L', at: to },
+];
 
-/** A round-capped zero-length segment renders as a dot exactly one stroke wide. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const dot = (at: readonly [number, number]): string => `M${at[0]} ${at[1]}h0`;
-
-const path = (d: string): string => `<path d="${d}"/>`;
-
-function polygon(sides: number, radius: number, rotation = 0, step = 1): string {
-  const points = Array.from({ length: sides }, (_, index) =>
-    polar(radius, rotation + (index * step * 360) / sides),
-  );
-  return `M${points.map(([x, y]) => `${x} ${y}`).join('L')}Z`;
+function polygon(sides: number, radius: number, rotation = 0, step = 1): PenCommand[] {
+  return [
+    ...Array.from({ length: sides }, (_, index): PenCommand => ({
+      op: index === 0 ? 'M' : 'L',
+      at: polar(radius, rotation + (index * step * 360) / sides),
+    })),
+    { op: 'Z' },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,14 +147,14 @@ export function glyphPlacements(
 }
 
 /** The school glyph as a filled path centred on (x, y), scaled by `scale`. */
-function schoolGlyphAt(params: SpellRuneParams, x: number, y: number, scale: number): string {
+function schoolGlyphAt(params: SpellRuneParams, x: number, y: number, scale: number, pen: Pen): string {
   const glyph = schoolGlyphs[params.school];
   const dx = n(x - scale * (glyph.x + glyph.width / 2));
   const dy = n(y - scale * (glyph.y + glyph.height / 2));
-  return `<path d="${glyph.d}" fill="currentColor" stroke="none" transform="translate(${dx} ${dy}) scale(${n(scale * 10000) / 10000})"/>`;
+  return pen.glyph(glyph.d, `translate(${dx} ${dy}) scale(${n(scale * 10000) / 10000})`, [x, y]);
 }
 
-function schoolMarkup(params: SpellRuneParams): string {
+function schoolMarkup(params: SpellRuneParams, pen: Pen): string {
   const glyph = schoolGlyphs[params.school];
   const copies = glyphPlacements(params.instances).map(({ x, y, size }) => {
     // A single glyph is sized by its longest side; copies by their diagonal so they never overlap.
@@ -163,7 +162,7 @@ function schoolMarkup(params: SpellRuneParams): string {
       size === 0
         ? GLYPH_SIZE / Math.max(glyph.width, glyph.height)
         : size / Math.hypot(glyph.width, glyph.height);
-    return schoolGlyphAt(params, x, y, scale);
+    return schoolGlyphAt(params, x, y, scale, pen);
   });
   // Nothing but the glyph(s) in the middle: no enclosing ring.
   return copies.join('');
@@ -188,20 +187,20 @@ const LEVEL_CUT_ANGLE = 45;
 
 const levelRotation = (sides: number): number => 180 / sides;
 
-function levelMarkup(params: SpellRuneParams): string {
+function levelMarkup(params: SpellRuneParams, pen: Pen): string {
   if (params.level === 0) return '';
   const sides = levelSides(params.level);
-  if (sides === 0) return circle(LEVEL_RADIUS);
+  if (sides === 0) return circle(pen, LEVEL_RADIUS);
   if (sides === 2) {
     // The cut crosses the whole rune up to the script band, but stops at the core ring so the
     // school glyph stays clear.
-    return path(
+    return pen.path(
       [LEVEL_CUT_ANGLE, LEVEL_CUT_ANGLE + 180]
         .map((angle) => line(polar(CORE_RADIUS, angle), polar(BAND_INNER, angle)))
-        .join(''),
+        .flat(),
     );
   }
-  return levelEdgesMarkup(params.level) + levelNodesMarkup(params) + innerBandMarkup(params);
+  return levelEdgesMarkup(params.level, pen) + levelNodesMarkup(params, pen) + innerBandMarkup(params, pen);
 }
 
 /*
@@ -261,17 +260,17 @@ export function levelEdges(
   );
 }
 
-function levelEdgesMarkup(level: number): string {
+function levelEdgesMarkup(level: number, pen: Pen): string {
   const edges = levelEdges(level);
   // Without nodes the polygon is drawn as one closed path for clean corner joins.
   if (levelNodeRadius(level) === 0) {
     const sides = levelSides(level);
-    return path(polygon(sides, LEVEL_RADIUS, levelRotation(sides)));
+    return pen.path(polygon(sides, LEVEL_RADIUS, levelRotation(sides)));
   }
-  return path(edges.map(([a, b]) => line(a, b)).join(''));
+  return pen.path(edges.flatMap(([a, b]) => line(a, b)));
 }
 
-function levelNodesMarkup(params: SpellRuneParams): string {
+function levelNodesMarkup(params: SpellRuneParams, pen: Pen): string {
   const radius = levelNodeRadius(params.level);
   if (radius === 0) return '';
   const glyph = schoolGlyphs[params.school];
@@ -279,20 +278,20 @@ function levelNodesMarkup(params: SpellRuneParams): string {
   return levelVertices(params.level)
     .map(
       ([x, y]) =>
-        `<circle cx="${x}" cy="${y}" r="${radius}"/>` +
-        (params.level >= INNER_BAND_MIN_LEVEL ? schoolGlyphAt(params, x, y, glyphScale) : ''),
+        pen.circle([x, y], radius) +
+        (params.level >= INNER_BAND_MIN_LEVEL ? schoolGlyphAt(params, x, y, glyphScale, pen) : ''),
     )
     .join('');
 }
 
 /** Inner script band: the casting glyph again, facing inwards, between core and star. */
-function innerBandMarkup(params: SpellRuneParams): string {
+function innerBandMarkup(params: SpellRuneParams, pen: Pen): string {
   if (params.level < INNER_BAND_MIN_LEVEL) return '';
   const glyph = castingGlyphs[params.castingTime.kind];
   return Array.from({ length: INNER_BAND_SLOTS }, (_, i) => {
     const angle = (i + 0.5) * (360 / INNER_BAND_SLOTS);
     const [x, y] = polar(INNER_BAND_RADIUS, angle);
-    return `<path d="${glyph}" transform="translate(${x} ${y}) rotate(${n(angle + 180)})"/>`;
+    return pen.path(glyph, `translate(${x} ${y}) rotate(${n(angle + 180)})`);
   }).join('');
 }
 
@@ -318,48 +317,48 @@ export function levelOutlineRadius(level: number, degrees: number): number {
   return n(apothem / Math.cos(((local - sector / 2) * Math.PI) / 180));
 }
 
-function areaMarkup(shape: AreaShape, level: number): string {
+function areaMarkup(shape: AreaShape, level: number, pen: Pen): string {
   const R = AREA_RADIUS;
   switch (shape) {
     case 'none':
       return '';
     case 'sphere':
       // Vertex nodes and self-range rings need their own space before the script glyphs.
-      return circle(levelNodeRadius(level) > 0 ? 206 : R, ' stroke-dasharray="10 9"');
+      return circle(pen, levelNodeRadius(level) > 0 ? 206 : R, ' stroke-dasharray="10 9"');
     case 'cone':
-      return path(polygon(3, R));
+      return pen.path(polygon(3, R));
     case 'cube':
-      return path(polygon(4, R));
+      return pen.path(polygon(4, R));
     case 'square':
-      return path(polygon(4, R, 45));
+      return pen.path(polygon(4, R, 45));
     case 'cylinder': {
       const inner = levelNodeRadius(level) > 0 ? 197 : R - 14;
       const outer = levelNodeRadius(level) > 0 ? 207 : R;
       const ties = Array.from({ length: 12 }, (_, i) =>
         line(polar(inner, i * 30), polar(outer, i * 30)),
       );
-      return circle(inner) + circle(outer) + path(ties.join(''));
+      return circle(pen, inner) + circle(pen, outer) + pen.path(ties.flat());
     }
     case 'line': {
       const inner = CORE_RADIUS + 12;
-      return path(
+      return pen.path(
         [90, 270]
           .map((angle) => {
             const capA = polar(R, angle - 4);
             const capB = polar(R, angle + 4);
-            return line(polar(inner, angle), polar(R, angle)) + line(capA, capB);
+            return [...line(polar(inner, angle), polar(R, angle)), ...line(capA, capB)];
           })
-          .join(''),
+          .flat(),
       );
     }
     case 'emanation':
-      return path(
+      return pen.path(
         Array.from({ length: 16 }, (_, i) =>
           line(polar(R - 22, i * 22.5), polar(R, i * 22.5)),
-        ).join(''),
+        ).flat(),
       );
     case 'custom':
-      return path(polygon(6, R, 0, 2) + polygon(6, R, 30, 2));
+      return pen.path([...polygon(6, R, 0, 2), ...polygon(6, R, 30, 2)]);
   }
 }
 
@@ -411,7 +410,6 @@ export function spokeCount(params: SpellRuneParams): number {
   return SIZE_SPOKES.find(([limit]) => size <= limit)![1];
 }
 
-type Point = readonly [number, number];
 
 /** One range spoke: it starts on the figure it hangs from and points along `to - from`. */
 export interface RangeSpoke {
@@ -496,14 +494,14 @@ export function rangeSpokes(params: SpellRuneParams): readonly RangeSpoke[] {
   });
 }
 
-function rangeMarkup(params: SpellRuneParams): string {
+function rangeMarkup(params: SpellRuneParams, pen: Pen): string {
   const kind = params.range.kind;
   const spokes = rangeSpokes(params);
   if (kind === 'self') {
     // No reach: the count (area size) stays readable as small rings on the anchor.
-    return spokes.map(({ to }) => `<circle cx="${to[0]}" cy="${to[1]}" r="3"/>`).join('');
+    return spokes.map(({ to }) => pen.circle(to, 3)).join('');
   }
-  const parts: string[] = [];
+  const parts: PenCommand[][] = [];
   const tips: string[] = [];
   for (const { from, to } of spokes) {
     parts.push(line(from, to));
@@ -519,20 +517,20 @@ function rangeMarkup(params: SpellRuneParams): string {
       parts.push(line(to, [n(to[0] - ux * 8 + px * 6), n(to[1] - uy * 8 + py * 6)]));
     }
     if (kind === 'sight') {
-      tips.push(`<circle cx="${n(to[0] + ux * 5)}" cy="${n(to[1] + uy * 5)}" r="5"/>`);
+      tips.push(pen.circle([n(to[0] + ux * 5), n(to[1] + uy * 5)], 5));
     }
   }
-  return path(parts.join('')) + tips.join('');
+  return pen.path(parts.flat()) + tips.join('');
 }
 
 /** Casting-time glyphs in a local 16×16 box centred on the origin, upright = pointing outwards. */
-const castingGlyphs: Readonly<Record<CastingTimeKind, string>> = {
-  action: 'M0 -7L0 7',
-  'bonus-action': 'M-6 6L0 -6L6 6',
-  reaction: 'M-5 -7L5 -2L-5 2L5 7',
-  minute: 'M0 -6A6 6 0 1 1 -0.01 -6Z',
-  hour: 'M-6 -7L6 -7L-6 7L6 7Z',
-  special: 'M0 -7L0 7M-6 -3.5L6 3.5M-6 3.5L6 -3.5',
+const castingGlyphs: Readonly<Record<CastingTimeKind, readonly PenCommand[]>> = {
+  action: [...line([-3, -7], [-3, 7]), ...line([4, -3], [-3, -7]), { op: 'L', at: [-3, -1] }, { op: 'L', at: [4, 3] }],
+  'bonus-action': [...line([-6, 6], [0, -6]), { op: 'L', at: [6, 6] }],
+  reaction: [...line([-5, -7], [5, -2]), { op: 'L', at: [-5, 2] }, { op: 'L', at: [5, 7] }],
+  minute: [{ op: 'M', at: [0, -6] }, { op: 'A', radius: 6, large: 1, sweep: 1, at: [-0.01, -6] }, { op: 'Z' }],
+  hour: [...line([-6, -7], [6, -7]), { op: 'L', at: [-6, 7] }, { op: 'L', at: [6, 7] }, { op: 'Z' }],
+  special: [...line([0, -7], [0, 7]), ...line([-6, -3.5], [6, 3.5]), ...line([-6, 3.5], [6, -3.5])],
 };
 
 /** Angles where a range spoke crosses the script band (level-0 spokes, unlimited range). */
@@ -554,44 +552,44 @@ export function castingGlyphAngles(params: SpellRuneParams): readonly number[] {
   );
 }
 
-function castingMarkup(params: SpellRuneParams): string {
+function castingMarkup(params: SpellRuneParams, pen: Pen): string {
   const glyph = castingGlyphs[params.castingTime.kind];
   return castingGlyphAngles(params)
     .map((angle) => {
       const [x, y] = polar(BAND_MID, angle);
-      return `<path d="${glyph}" transform="translate(${x} ${y}) rotate(${n(angle)})"/>`;
+      return pen.path(glyph, `translate(${x} ${y}) rotate(${n(angle)})`);
     })
     .join('');
 }
 
-function sealMarkup(): string {
-  return circle(SEAL_RADIUS);
+function sealMarkup(pen: Pen): string {
+  return circle(pen, SEAL_RADIUS);
 }
 
 /** A short tie from the seal to an outer mark centred on OUTER_MARK_RADIUS. */
-function tie(angle: number, markInner: number): string {
+function tie(angle: number, markInner: number): PenCommand[] {
   return line(polar(SEAL_RADIUS, angle), polar(OUTER_MARK_RADIUS - markInner, angle));
 }
 
 /** Ritual: a diamond on each cardinal point, outside the seal. */
-function ritualMarkup(): string {
+function ritualMarkup(pen: Pen): string {
   return [0, 90, 180, 270]
     .map((angle) => {
       const [x, y] = polar(OUTER_MARK_RADIUS, angle);
       return (
-        path(tie(angle, 10)) +
-        `<path d="M${x} ${n(y - 10)}L${n(x + 7)} ${y}L${x} ${n(y + 10)}L${n(x - 7)} ${y}Z" transform="rotate(${angle} ${x} ${y})"/>`
+        pen.path(tie(angle, 10)) +
+        pen.polygon([[x, n(y - 10)], [n(x + 7), y], [x, n(y + 10)], [n(x - 7), y]], `rotate(${angle} ${x} ${y})`)
       );
     })
     .join('');
 }
 
 /** Concentration: an "eye of focus" (circle with a pupil) on each diagonal, outside the seal. */
-function concentrationMarkup(): string {
+function concentrationMarkup(pen: Pen): string {
   return [45, 135, 225, 315]
     .map((angle) => {
       const [x, y] = polar(OUTER_MARK_RADIUS, angle);
-      return path(tie(angle, 8)) + `<circle cx="${x}" cy="${y}" r="8"/>` + path(`M${x} ${y}h0`);
+      return pen.path(tie(angle, 8)) + pen.circle([x, y], 8) + pen.dot([x, y]);
     })
     .join('');
 }
@@ -605,19 +603,21 @@ export function runeColor(params: SpellRuneParams): string {
     : damageColors[params.damageType];
 }
 
-export function composeRune(params: SpellRuneParams): RuneComposition {
+export function composeRune(params: SpellRuneParams, options: RuneRenderOptions = {}): RuneComposition {
   const value = normalizeRuneParams(params);
+  const pen = (layer: RuneLayer, ...dependencies: readonly unknown[]): Pen =>
+    options.style === 'clean' ? cleanPen : ballpointPen(JSON.stringify([layer, ...dependencies]));
   const steps: [string, RuneLayer, string][] = [
-    ['core', 'school', schoolMarkup(value)],
-    ['level-rings', 'level', levelMarkup(value)],
-    ['area-figure', 'area', areaMarkup(value.area.shape, value.level)],
-    ['range-spokes', 'range', rangeMarkup(value)],
-    ['script-band', 'casting-time', castingMarkup(value)],
-    ['outer-seal', 'seal', sealMarkup()],
+    ['core', 'school', schoolMarkup(value, pen('school', value.school, value.instances))],
+    ['level-rings', 'level', levelMarkup(value, pen('level', value.level, ...(value.level >= INNER_BAND_MIN_LEVEL ? [value.school, value.castingTime.kind] : [])))],
+    ['area-figure', 'area', areaMarkup(value.area.shape, value.level, pen('area', value.area.shape, levelNodeRadius(value.level) > 0))],
+    ['range-spokes', 'range', rangeMarkup(value, pen('range', value.level, value.range, spokeCount(value)))],
+    ['script-band', 'casting-time', castingMarkup(value, pen('casting-time', value.castingTime.kind, castingGlyphAngles(value)))],
+    ['outer-seal', 'seal', sealMarkup(pen('seal'))],
   ];
   if (value.concentration)
-    steps.push(['concentration-marks', 'concentration', concentrationMarkup()]);
-  if (value.ritual) steps.push(['ritual-marks', 'ritual', ritualMarkup()]);
+    steps.push(['concentration-marks', 'concentration', concentrationMarkup(pen('concentration'))]);
+  if (value.ritual) steps.push(['ritual-marks', 'ritual', ritualMarkup(pen('ritual'))]);
   const strokes: RuneStroke[] = steps
     .filter(([, , markup]) => markup.length > 0)
     .map(([id, layer, markup], index) => ({ id, layer, markup, order: index + 1 }));
@@ -643,7 +643,9 @@ export function renderRuneSvg(
   options: RuneRenderOptions = {},
 ): string {
   const composition =
-    'strokes' in compositionOrParams ? compositionOrParams : composeRune(compositionOrParams);
+    'strokes' in compositionOrParams
+      ? options.style ? composeRune(compositionOrParams.params, options) : compositionOrParams
+      : composeRune(compositionOrParams, options);
   const visible = composition.strokes.slice(
     0,
     Math.max(0, options.visibleStrokeCount ?? composition.strokes.length),
@@ -668,11 +670,14 @@ export function renderRuneSvg(
   const ink = composition.color;
   // `color` drives the filled school glyph (currentColor); a gradient can't be a color, so
   // variable damage also fills the glyph through the gradient explicitly.
-  const glyphFill = variable ? groups.replace('fill="currentColor"', `fill="${ink}"`) : groups;
+  const glyphFill = variable ? groups.replaceAll('fill="currentColor"', `fill="${ink}"`) : groups;
+  const ballpoint = composition.strokes.some((stroke) => stroke.markup.includes('stroke-opacity='));
+  const filterId = `rune-grain-${hashSeed(JSON.stringify(composition.params)).toString(16)}`;
+  const grain = ballpoint ? `<defs><filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="1.15" numOctaves="2" seed="17" result="paperNoise"/><feColorMatrix in="paperNoise" type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 16 0 -4.3" result="grainAlpha"/><feComposite in="SourceGraphic" in2="grainAlpha" operator="in" result="grainInk"/><feDisplacementMap in="grainInk" in2="paperNoise" scale="${GRAIN_DISPLACEMENT}" xChannelSelector="R" yChannelSelector="G"/></filter></defs>` : '';
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}" role="img" aria-label="${escapeAttribute(runeSummary(composition.params))}" focusable="false">` +
-    (variable ? gradientDefs() : '') +
-    `<g fill="none" stroke="${ink}" color="${variable ? variableGradientStops[0] : ink}" stroke-width="${n(RUNE_STROKE_WIDTH / RUNE_SCALE)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${C} ${C}) scale(${RUNE_SCALE}) translate(${-C} ${-C})">${glyphFill}</g></svg>`
+    (variable ? gradientDefs() : '') + grain +
+    `<g${ballpoint ? ` filter="url(#${filterId})"` : ''} fill="none" stroke="${ink}" color="${variable ? variableGradientStops[0] : ink}" stroke-width="${n(RUNE_STROKE_WIDTH / RUNE_SCALE)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${C} ${C}) scale(${RUNE_SCALE}) translate(${-C} ${-C})">${glyphFill}</g></svg>`
   );
 }
 
@@ -712,7 +717,7 @@ const rangeDetails: Readonly<Record<SpellRuneParams['range']['kind'], string>> =
 };
 
 const castingDetails: Readonly<Record<CastingTimeKind, string>> = {
-  action: 'Glifo a tratto verticale',
+  action: 'Glifo runico con stelo verticale e due rami obliqui verso destra',
   'bonus-action': 'Glifo a punta di freccia',
   reaction: 'Glifo a zig-zag',
   minute: 'Glifo circolare',

@@ -161,10 +161,13 @@
           <p class="section-number">II</p>
           <h2 id="rune-title">Osserva il sigillo</h2>
         </div>
-        <button class="download-button" type="button" (click)="downloadSvg()">
-          Scarica SVG <span aria-hidden="true">↓</span>
+        <button class="download-button" type="button" [disabled]="exporting()" (click)="downloadPng()">
+          {{ exporting() ? 'Esportazione…' : 'Scarica PNG' }} <span aria-hidden="true">↓</span>
         </button>
       </div>
+      @if (exportError()) {
+        <p role="alert">{{ exportError() }}</p>
+      }
       <div class="rune-frame">
         <span class="corner corner-a" aria-hidden="true"></span
         ><span class="corner corner-b" aria-hidden="true"></span>
