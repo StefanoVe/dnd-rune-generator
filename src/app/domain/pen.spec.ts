@@ -280,3 +280,57 @@ describe('maximum-noise ring closure', () => {
       }
   });
 });
+
+describe('localized ink at reversals', () => {
+  it('adds a small deposit at a tight turn and removes it at zero noise', () => {
+    const shape = {
+      kind: 'polyline' as const,
+      points: [
+        [0, 0],
+        [10, 0],
+        [1, 1],
+      ] as const,
+      detailScale: 1,
+    };
+    let deposits = 0;
+    for (let seed = 0; seed < 100; seed++) {
+      const gesture = ballpointGesture(String(seed), shape)[0];
+      if (gesture.turnBlot) {
+        expect(gesture.turnBlot).toEqual([10, 0]);
+        deposits++;
+      }
+      expect(ballpointGesture(String(seed), shape, 0)[0].turnBlot).toBeUndefined();
+    }
+    expect(deposits).toBeGreaterThan(20);
+    expect(deposits).toBeLessThan(45);
+  });
+});
+
+describe('dashed sphere ink', () => {
+  it('gives individual dashes their own pressure and localized deposits', () => {
+    const gestures = ballpointGesture('dashes', {
+      kind: 'circle',
+      center: [256, 256],
+      radius: 206,
+      dashed: true,
+    });
+    expect(new Set(gestures.map((gesture) => gesture.widths[0])).size).toBeGreaterThan(5);
+    expect(gestures.some((gesture) => gesture.blot)).toBe(true);
+    expect(gestures.some((gesture) => !gesture.blot)).toBe(true);
+  });
+});
+
+describe('hatch placement stability', () => {
+  it('anchors hatch rows to each copy rather than the page origin', () => {
+    const shape = flattenSvgPath('M0 0H20V20H0Z');
+    const shifted = shape.map((contour) => contour.map(([x, y]) => [x + 113, y + 207] as const));
+    const original = hatchPolygons(shape, 3, 0.7);
+    const translated = hatchPolygons(shifted, 3, 0.7);
+    expect(translated).toHaveLength(original.length);
+    for (let i = 0; i < original.length; i++)
+      for (let j = 0; j < 2; j++) {
+        expect(translated[i][j][0] - 113).toBeCloseTo(original[i][j][0], 8);
+        expect(translated[i][j][1] - 207).toBeCloseTo(original[i][j][1], 8);
+      }
+  });
+});

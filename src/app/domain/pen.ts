@@ -102,6 +102,7 @@ export interface BallpointGesture {
   readonly widths: readonly number[];
   readonly opacities: readonly number[];
   readonly blot: boolean;
+  readonly turnBlot?: Point;
   readonly groove: boolean;
   readonly skip: boolean;
   readonly overlapDegrees: number;
@@ -178,14 +179,41 @@ export function ballpointGesture(
     skipSample = random();
   const tremor = (s: number, t: number, detail = 1): number =>
     high * 2.2 * detail * Math.sin(s * Math.PI * 0.8 + phase) * Math.sin(Math.PI * t);
+  let finishIndex = 0;
   const finish = (
     points: readonly Point[],
     overlapDegrees = 0,
     startAngle?: number,
   ): BallpointGesture => {
+    // Dashes are distinct pen gestures. Their ink draws are indexed independently
+    // of noise and sampling density, while their slow circular drift stays shared.
+    const dashRandom =
+      shape.kind === 'circle' && shape.dashed
+        ? seededRandom(`${seed}:dash:${finishIndex++}`)
+        : null;
+    const inkBlot = dashRandom ? dashRandom() : blotSample;
+    const inkGroove = dashRandom ? dashRandom() : grooveSample;
+    const inkPhase = dashRandom ? dashRandom() * Math.PI * 2 : pressurePhase;
     const length = lengthOf(points),
       spread = Math.min(0.2 * factor, 0.6);
+    let turnBlot: Point | undefined;
+    if (shape.kind === 'polyline' && inkBlot < Math.min(0.6, 0.33 * factor)) {
+      let sharpest = -0.5;
+      for (let i = 1; i < shape.points.length - 1; i++) {
+        const a = shape.points[i - 1],
+          b = shape.points[i],
+          c = shape.points[i + 1];
+        const cosine =
+          ((b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])) /
+          (distance(a, b) * distance(b, c) || 1);
+        if (cosine < sharpest) {
+          sharpest = cosine;
+          turnBlot = b;
+        }
+      }
+    }
     return {
+      turnBlot,
       points: points.map((point) => {
         const [x, y] = global ? insideDrawing(point) : point;
         return [n(x), n(y)];
@@ -195,7 +223,7 @@ export function ballpointGesture(
         const taper = 1 - Math.min(0.45, 0.2 * factor) * Math.max(0, (t - 0.88) / 0.12);
         return n(
           (BALLPOINT_WIDTH / DRAWING_SCALE) *
-            (1 + spread * Math.cos(t * Math.PI * 2 + pressurePhase)) *
+            (1 + spread * Math.cos(t * Math.PI * 2 + inkPhase)) *
             taper,
         );
       }),
@@ -205,8 +233,8 @@ export function ballpointGesture(
         const fade = length > 400 ? 0.16 : 0.06;
         return n(1 - Math.min(fade, fade * factor) * Math.sin(Math.PI * t) ** 4);
       }),
-      blot: blotSample < Math.min(0.6, 0.33 * factor),
-      groove: factor > 0 && grooveSample < 0.18,
+      blot: inkBlot < Math.min(0.6, 0.33 * factor),
+      groove: factor > 0 && inkGroove < 0.18,
       skip: length > 100 && skipSample < Math.min(0.3, INK_SKIP_CHANCE * factor),
       overlapDegrees,
       startAngle,
@@ -538,12 +566,21 @@ export function hatchPolygons(
 ): readonly (readonly [Point, Point])[] {
   const cos = Math.cos(angle),
     sin = Math.sin(angle);
+  const source = contours.flat();
+  if (!source.length) return [];
+  const cx = (Math.min(...source.map(([x]) => x)) + Math.max(...source.map(([x]) => x))) / 2;
+  const cy = (Math.min(...source.map(([, y]) => y)) + Math.max(...source.map(([, y]) => y))) / 2;
+  // Anchor the hatch grid to the glyph, so rotating it doesn't slide the grid
+  // through the whole rune while the noise slider is dragged.
   const rotated = contours.map((contour) =>
-    contour.map(([x, y]): Point => [cos * x + sin * y, -sin * x + cos * y]),
+    contour.map(([x, y]): Point => [
+      cos * (x - cx) + sin * (y - cy),
+      -sin * (x - cx) + cos * (y - cy),
+    ]),
   );
   const ys = rotated.flat().map((point) => point[1]);
   const lines: [Point, Point][] = [];
-  const back = (x: number, y: number): Point => [cos * x - sin * y, sin * x + cos * y];
+  const back = (x: number, y: number): Point => [cx + cos * x - sin * y, cy + sin * x + cos * y];
   for (let y = Math.ceil(Math.min(...ys) / spacing) * spacing; y < Math.max(...ys); y += spacing) {
     const hits: { x: number; winding: number }[] = [];
     for (const contour of rotated)
@@ -623,6 +660,8 @@ export function ballpointPen(seed: string, penNoise = DEFAULT_PEN_NOISE): Pen {
         }
         if (gesture.blot)
           markup += `<path data-pen-event="blot" d="M${points[0][0]} ${points[0][1]}h0" stroke-width="${n(widths[0] * widthScale * (1 + 0.35 * Math.min(factor, 2)))}" stroke-opacity=".98"/>`;
+        if (gesture.turnBlot)
+          markup += `<path data-pen-event="turn" d="M${n(gesture.turnBlot[0])} ${n(gesture.turnBlot[1])}h0" stroke-width="${n((BALLPOINT_WIDTH / DRAWING_SCALE) * widthScale * (1 + 0.2 * Math.min(factor, 2)))}" stroke-opacity=".99"/>`;
         return kind === 'outline' ? `<g data-pen-part="outline">${markup}</g>` : markup;
       })
       .join('')
@@ -753,20 +792,34 @@ export function ballpointPen(seed: string, penNoise = DEFAULT_PEN_NOISE): Pen {
     );
     const hatch = hatchPolygons(contours, spacing, angle);
     let hatchMarkup = '';
+    const rowSegments = new Map<number, number>();
     for (const [from, to] of hatch) {
+      const row = Math.round(
+        (-(from[0] - (box.left + box.right) / 2) * Math.sin(angle) +
+          (from[1] - (box.top + box.bottom) / 2) * Math.cos(angle)) /
+          spacing,
+      );
+      const segment = rowSegments.get(row) ?? 0;
+      rowSegments.set(row, segment + 1);
+      const hatchSeed = `${glyphSeed}:hatch:${row}:${segment}`;
+      const hatchRandom = seededRandom(hatchSeed);
       const length = distance(from, to);
-      const shorten = (random() < 0.8 ? 0.5 + random() : -random() * 0.25) * factor;
-      const reverse = random() < 0.3;
+      const shorten = (hatchRandom() < 0.8 ? 0.5 + hatchRandom() : -hatchRandom() * 0.25) * factor;
+      const reverse = hatchRandom() < 0.3;
       if (length < 0.4) continue;
       const inset = Math.max(-0.25, Math.min(length * 0.25, shorten));
       const a = mix(from, to, inset / length),
         b = mix(to, from, inset / length);
       const hatchPoints = reverse ? [vary(b), vary(a)] : [vary(a), vary(b)];
-      let gestures = next({
-        kind: 'polyline',
-        points: hatchPoints,
-        detailScale: Math.min(detail, length / 70),
-      });
+      let gestures = ballpointGesture(
+        hatchSeed,
+        {
+          kind: 'polyline',
+          points: hatchPoints,
+          detailScale: Math.min(detail, length / 70),
+        },
+        noise,
+      );
       // Bound hatching to its transformed glyph box; the outline alone may overshoot.
       const corners = (
         [

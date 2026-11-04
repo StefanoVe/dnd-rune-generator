@@ -1,4 +1,4 @@
-import { BALLPOINT_WIDTH, INK_OPACITY, MAX_WOBBLE, MAX_OVERSHOOT, circleWobble, GRAIN_DISPLACEMENT, flattenSvgPath } from './pen';
+import { BALLPOINT_WIDTH, INK_OPACITY, MAX_WOBBLE, MAX_OVERSHOOT, circleWobble, GRAIN_DISPLACEMENT, flattenSvgPath, noiseFactor } from './pen';
 import { spellCatalog } from '../catalog/spell-catalog';
 import { contrastRatio, damageColors, paperColor, variableGradientStops } from './damage-colors';
 import {
@@ -553,7 +553,7 @@ describe('ballpoint clearances and ink', () => {
   });
 
   it('preserves node-to-area and spoke-to-band gaps after worst-case wobble and pressure', () => {
-    const halfWidth = BALLPOINT_WIDTH * 1.25 * 1.06 / RUNE_SCALE / 2 + GRAIN_DISPLACEMENT / 2;
+    const halfWidth = BALLPOINT_WIDTH * 1.25 * 1.06 * 1.35 / RUNE_SCALE / 2 + GRAIN_DISPLACEMENT / 2;
     for (const level of [7, 8, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
       const radii = shape === 'sphere' ? [206] : [197, 207];
       const params = { ...defaultRuneParams, level, area: { shape, sizeFeet: 9999, inferred: false } };
@@ -650,8 +650,9 @@ describe('pen-noise rendering limits', () => {
   }, 15000);
 
   it('preserves actual node-to-area separation through noise 50', () => {
-    const halfWidth = BALLPOINT_WIDTH * 1.2 / RUNE_SCALE / 2;
     for (const penNoise of [0, 35, 50]) for (const level of [7, 8, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
+      const factor = noiseFactor(penNoise);
+      const halfWidth = BALLPOINT_WIDTH / RUNE_SCALE / 2 * (1 + Math.min(.2 * factor, .6)) * (1 + .35 * Math.min(factor, 2));
       const composition = composeStyledRune({ ...defaultRuneParams, level, area: { shape, sizeFeet: 9999, inferred: false } }, { penNoise });
       const area = composition.strokes.find((stroke) => stroke.layer === 'area')!.markup;
       const root = new DOMParser().parseFromString(`<svg>${area}</svg>`, 'image/svg+xml');
