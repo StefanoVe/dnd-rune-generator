@@ -33,6 +33,41 @@ describe('App', () => {
     expect(selectFor('Tipo di danno')?.value).toBe(defaultRuneParams.damageType);
   });
 
+  it('labels the pen slider accessibly and renders exact pen geometry at zero', async () => {
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const element = fixture.nativeElement as HTMLElement;
+    const slider = element.querySelector<HTMLInputElement>('#pen-noise')!;
+    expect(slider.type).toBe('range');
+    expect(slider.labels?.[0].textContent).toContain('Imperfezione della penna');
+    expect(slider.value).toBe('35');
+    expect(slider.getAttribute('aria-valuetext')).toBe('35 – mano naturale');
+    const before = element.querySelector('.rune-preview')!.innerHTML;
+    slider.value = '0'; slider.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+    expect(slider.getAttribute('aria-valuetext')).toBe('0 – tratto perfetto');
+    expect(element.querySelector('.rune-preview')!.innerHTML).not.toBe(before);
+    expect([...element.querySelectorAll('[data-pen-noise]')].every((group) => group.getAttribute('data-pen-noise') === '0')).toBe(true);
+    expect(element.querySelector('[data-pen-event]')).toBeNull();
+    expect(element.querySelector('[data-pen-part="hatch"]')).not.toBeNull();
+    expect(element.querySelector('.pen-noise-field output')?.textContent?.trim()).toBe('0');
+  });
+
+  it('keeps the current guide step when the pen noise changes', async () => {
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const element = fixture.nativeElement as HTMLElement;
+    const named = (name: string) => [...element.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent?.includes(name))!;
+    named('Avvia guida').click(); fixture.detectChanges();
+    named('Successivo').click(); fixture.detectChanges();
+    const slider = element.querySelector<HTMLInputElement>('#pen-noise')!;
+    slider.value = '75'; slider.dispatchEvent(new Event('input'));
+    await fixture.whenStable();
+    expect(element.querySelector('.stroke-counter')?.textContent).toContain('Passo 2');
+    expect(element.querySelectorAll('.rune-preview [data-stroke-order]')).toHaveLength(2);
+    expect(element.querySelector('[data-pen-noise="75"]')).not.toBeNull();
+  });
+
   it('pins a legend layer and fades the other SVG layers', async () => {
     const fixture = TestBed.createComponent(App);
     await fixture.whenStable();
@@ -249,6 +284,9 @@ describe('App', () => {
       });
 
     try {
+      const slider = element.querySelector<HTMLInputElement>('#pen-noise')!;
+      slider.value = '0'; slider.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
       [...element.querySelectorAll<HTMLButtonElement>('button')]
         .find((button) => button.textContent?.includes('Avvia guida'))!
         .click();
@@ -261,6 +299,8 @@ describe('App', () => {
         composeRune(defaultRuneParams).strokes.length,
       );
       expect(svg).not.toMatch(/<(text|title|desc)\b/i);
+      expect(svg).toContain('data-pen-noise="0"');
+      expect(svg).not.toContain('data-pen-event');
       expect(drawImage).toHaveBeenCalledWith(expect.any(HTMLImageElement), 0, 0, 1024, 1024);
       expect(toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/png');
       expect(createObjectUrl).toHaveBeenLastCalledWith(png);

@@ -1,4 +1,4 @@
-import { BALLPOINT_WIDTH, INK_OPACITY, MAX_WOBBLE, MAX_OVERSHOOT, circleWobble, GRAIN_DISPLACEMENT } from './pen';
+import { BALLPOINT_WIDTH, INK_OPACITY, MAX_WOBBLE, MAX_OVERSHOOT, circleWobble, GRAIN_DISPLACEMENT, flattenSvgPath } from './pen';
 import { spellCatalog } from '../catalog/spell-catalog';
 import { contrastRatio, damageColors, paperColor, variableGradientStops } from './damage-colors';
 import {
@@ -465,14 +465,14 @@ describe('ballpoint rune rendering', () => {
     const copies = [...root.documentElement.children];
     expect(copies).toHaveLength(SCRIPT_SLOTS);
     expect(new Set(copies.map((copy) => copy.innerHTML)).size).toBe(SCRIPT_SLOTS);
-    expect(new Set(copies.map((copy) => copy.getAttribute('transform'))).size).toBe(SCRIPT_SLOTS);
+    expect(new Set(copies.map((copy) => copy.querySelector('[transform]')?.getAttribute('transform'))).size).toBe(SCRIPT_SLOTS);
   });
 
-  it('applies variable ink to every filled outline and school copy, preserving guide opacity', () => {
+  it('applies variable ink to every stroked school outline and hatch, preserving guide opacity', () => {
     const params = { ...defaultRuneParams, level: 9, instances: 12, damageType: 'variable' as const };
     const svg = renderStyledRuneSvg(params, { currentStroke: 1 });
     expect(svg).not.toContain('fill="currentColor"');
-    expect(svg).toContain('fill="url(#rune-variable-ink)"');
+    expect(svg).toContain('stroke="url(#rune-variable-ink)"');
     const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
     expect(root.querySelector('[data-stroke-order="1"]')?.getAttribute('opacity')).toBe('0.3');
     expect(root.querySelector('[data-stroke-order="2"]')?.getAttribute('opacity')).toBeNull();
@@ -592,32 +592,16 @@ describe('action glyph', () => {
   });
 });
 
-describe('ballpoint grain filter', () => {
-  it('embeds one self-contained high-frequency grain filter on the drawing group only', () => {
+describe('dense ballpoint ink', () => {
+  it('has no grain, displacement or destructive alpha filter', () => {
     const svg = renderStyledRuneSvg(defaultRuneParams);
-    const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
-    expect(root.querySelectorAll('filter')).toHaveLength(1);
-    expect(root.querySelectorAll('[filter]')).toHaveLength(1);
-    const id = root.querySelector('filter')!.id;
-    expect(root.querySelector('[filter]')!.getAttribute('filter')).toBe(`url(#${id})`);
-    expect(root.querySelector('feTurbulence')!.getAttribute('baseFrequency')).toBe('1.15');
-    expect(root.querySelector('feTurbulence')!.getAttribute('numOctaves')).toBe('2');
-    expect(root.querySelector('feComposite')!.getAttribute('operator')).toBe('in');
-    expect(Number(root.querySelector('feDisplacementMap')!.getAttribute('scale'))).toBeGreaterThanOrEqual(0.6);
+    expect(svg).not.toMatch(/<(filter|feTurbulence|feComposite|feDisplacementMap)\b/);
     expect(renderRuneSvg(defaultRuneParams)).not.toContain('<filter');
-    const other = renderStyledRuneSvg({ ...defaultRuneParams, level: 9 });
-    expect(other).not.toContain(`id="${id}"`);
   });
 });
 
 function centerlinePoints(d: string): readonly (readonly number[])[] {
-  let x = 0, y = 0;
-  return [...d.matchAll(/([MLl])([-\d.]+) ([-\d.]+)/g)].map((match) => {
-    const a = Number(match[2]), b = Number(match[3]);
-    x = match[1] === 'l' ? x + a : a;
-    y = match[1] === 'l' ? y + b : b;
-    return [x, y];
-  });
+  return flattenSvgPath(d).flat();
 }
 
 describe('ballpoint worst-case serialization', () => {
@@ -633,5 +617,53 @@ describe('ballpoint worst-case serialization', () => {
       ritual: true,
     });
     expect(new TextEncoder().encode(svg).length).toBeLessThan(150_000);
+  });
+});
+
+describe('pen-noise rendering limits', () => {
+  it('uses normalized noise in compositions and explicit renders without changing the seed', () => {
+    expect(renderStyledRuneSvg(defaultRuneParams)).toBe(renderStyledRuneSvg(defaultRuneParams, { penNoise: 35 }));
+    expect(renderStyledRuneSvg(defaultRuneParams, { penNoise: -10 })).toBe(renderStyledRuneSvg(defaultRuneParams, { penNoise: 0 }));
+    expect(renderStyledRuneSvg(defaultRuneParams, { penNoise: 999 })).toBe(renderStyledRuneSvg(defaultRuneParams, { penNoise: 100 }));
+    expect(renderStyledRuneSvg(defaultRuneParams, { style: 'clean', penNoise: 100 })).toBe(renderRuneSvg(defaultRuneParams));
+    expect(renderStyledRuneSvg(composeRune(defaultRuneParams), { penNoise: 100 })).toBe(renderRuneSvg(defaultRuneParams));
+    const composition = composeStyledRune(defaultRuneParams, { penNoise: 0 });
+    expect(renderStyledRuneSvg(composition)).toBe(renderStyledRuneSvg(defaultRuneParams, { penNoise: 0 }));
+    expect(renderStyledRuneSvg(composition, { penNoise: 35 })).toBe(renderStyledRuneSvg(defaultRuneParams));
+  });
+
+  it('keeps high-noise ink inside the viewBox, including transformed outer marks', () => {
+    for (const level of [0, 2, 3, 7, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
+      const svg = renderStyledRuneSvg({ ...defaultRuneParams, level, instances: 12, concentration: true, ritual: true,
+        range: { kind: 'unlimited', distanceFeet: null }, area: { shape, sizeFeet: 9999, inferred: false } }, { penNoise: 100 });
+      const root = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      let minimum = Infinity, maximum = -Infinity;
+      for (const path of root.querySelectorAll('path')) for (const point of centerlinePoints(path.getAttribute('d')!)) {
+        const placed = placedPoint(path, point);
+        minimum = Math.min(minimum, ...placed); maximum = Math.max(maximum, ...placed);
+      }
+      // Five screen pixels also cover maximum pressure, blots and copy scaling.
+      expect(minimum - 5).toBeGreaterThanOrEqual(0);
+      expect(maximum + 5).toBeLessThanOrEqual(512);
+      expect(root.querySelector('parsererror')).toBeNull();
+    }
+  }, 15000);
+
+  it('preserves actual node-to-area separation through noise 50', () => {
+    const halfWidth = BALLPOINT_WIDTH * 1.2 / RUNE_SCALE / 2;
+    for (const penNoise of [0, 35, 50]) for (const level of [7, 8, 9]) for (const shape of ['sphere', 'cylinder'] as const) {
+      const composition = composeStyledRune({ ...defaultRuneParams, level, area: { shape, sizeFeet: 9999, inferred: false } }, { penNoise });
+      const area = composition.strokes.find((stroke) => stroke.layer === 'area')!.markup;
+      const root = new DOMParser().parseFromString(`<svg>${area}</svg>`, 'image/svg+xml');
+      const points = [...root.querySelectorAll('path')].flatMap((path) => centerlinePoints(path.getAttribute('d')!));
+      for (const circle of root.querySelectorAll('circle')) {
+        const radius = Number(circle.getAttribute('r'));
+        for (let i = 0; i < 360; i++) points.push([256 + radius * Math.cos(i * Math.PI / 180), 256 + radius * Math.sin(i * Math.PI / 180)]);
+      }
+      let gap = Infinity;
+      for (const [x, y] of points) for (const [vx, vy] of levelVertices(level)) gap = Math.min(gap,
+        Math.hypot(x - vx, y - vy) - levelNodeRadius(level) - circleWobble(levelNodeRadius(level), false, penNoise) - 2 * halfWidth);
+      expect(gap).toBeGreaterThan(0);
+    }
   });
 });

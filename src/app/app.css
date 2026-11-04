@@ -67,3 +67,16 @@
     justify-content: flex-start;
   }
 }
+
+.pen-noise-field > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.pen-noise-field input[type='range'] {
+  min-height: 44px;
+  padding: 0;
+  accent-color: var(--ink, #241b35);
+  cursor: pointer;
+}

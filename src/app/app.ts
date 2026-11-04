@@ -12,6 +12,7 @@ import {
 import { DomSanitizer } from '@angular/platform-browser';
 import { spellCatalog } from './catalog/spell-catalog';
 import { SpellSearch } from './spell-search/spell-search';
+import { DEFAULT_PEN_NOISE, normalizePenNoise } from './domain/pen';
 import { variableGradientStops } from './domain/damage-colors';
 import { composeRune, describeRune, renderRuneSvg, runeSummary } from './domain/rune-engine';
 import {
@@ -53,6 +54,12 @@ export class App {
 
   protected readonly selectedSpellId = signal('');
   protected readonly runeParams = signal<SpellRuneParams>(defaultRuneParams);
+  protected readonly penNoise = signal(DEFAULT_PEN_NOISE);
+  protected readonly penNoiseDescription = computed(() => {
+    const value = this.penNoise();
+    const description = value === 0 ? 'tratto perfetto' : value <= 20 ? 'mano precisa' : value <= 50 ? 'mano naturale' : value < 100 ? 'mano tremante' : 'tremore marcato';
+    return `${value} – ${description}`;
+  });
   protected readonly hoveredLayer = signal<RuneLayer | undefined>(undefined);
   protected readonly focusedLayer = signal<RuneLayer | undefined>(undefined);
   protected readonly pinnedLayer = signal<RuneLayer | undefined>(undefined);
@@ -66,7 +73,7 @@ export class App {
   );
   protected readonly explanation = computed(() => describeRune(this.runeParams()));
   protected readonly summary = computed(() => runeSummary(this.runeParams()));
-  protected readonly composition = computed(() => composeRune(this.runeParams()));
+  protected readonly composition = computed(() => composeRune(this.runeParams(), { penNoise: this.penNoise() }));
   protected readonly activeLayer = computed(() =>
     this.guideActive()
       ? undefined
@@ -102,6 +109,10 @@ export class App {
     const spell = this.selectedSpell();
     this.runeParams.set(spell ? structuredClone(spell.rune) : defaultRuneParams);
     this.exitStrokeGuide();
+  }
+
+  protected setPenNoise(event: Event): void {
+    this.penNoise.set(normalizePenNoise(this.eventNumber(event)));
   }
 
   protected setLevel(event: Event): void {

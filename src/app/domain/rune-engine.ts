@@ -1,4 +1,4 @@
-import { ballpointPen, cleanPen, hashSeed, GRAIN_DISPLACEMENT, type Pen, type PenCommand, type Point } from './pen';
+import { ballpointPen, cleanPen, type Pen, type PenCommand, type Point } from './pen';
 import { damageColorNames, damageColors, variableGradientStops } from './damage-colors';
 import {
   areaOptions,
@@ -606,7 +606,7 @@ export function runeColor(params: SpellRuneParams): string {
 export function composeRune(params: SpellRuneParams, options: RuneRenderOptions = {}): RuneComposition {
   const value = normalizeRuneParams(params);
   const pen = (layer: RuneLayer, ...dependencies: readonly unknown[]): Pen =>
-    options.style === 'clean' ? cleanPen : ballpointPen(JSON.stringify([layer, ...dependencies]));
+    options.style === 'clean' ? cleanPen : ballpointPen(JSON.stringify([layer, ...dependencies]), options.penNoise);
   const steps: [string, RuneLayer, string][] = [
     ['core', 'school', schoolMarkup(value, pen('school', value.school, value.instances))],
     ['level-rings', 'level', levelMarkup(value, pen('level', value.level, ...(value.level >= INNER_BAND_MIN_LEVEL ? [value.school, value.castingTime.kind] : [])))],
@@ -644,7 +644,12 @@ export function renderRuneSvg(
 ): string {
   const composition =
     'strokes' in compositionOrParams
-      ? options.style ? composeRune(compositionOrParams.params, options) : compositionOrParams
+      ? options.style !== undefined || options.penNoise !== undefined
+        ? composeRune(compositionOrParams.params, {
+            ...options,
+            style: options.style ?? (compositionOrParams.strokes.some((stroke) => stroke.markup.includes('data-pen-noise=')) ? 'ballpoint' : 'clean'),
+          })
+        : compositionOrParams
       : composeRune(compositionOrParams, options);
   const visible = composition.strokes.slice(
     0,
@@ -671,13 +676,10 @@ export function renderRuneSvg(
   // `color` drives the filled school glyph (currentColor); a gradient can't be a color, so
   // variable damage also fills the glyph through the gradient explicitly.
   const glyphFill = variable ? groups.replaceAll('fill="currentColor"', `fill="${ink}"`) : groups;
-  const ballpoint = composition.strokes.some((stroke) => stroke.markup.includes('stroke-opacity='));
-  const filterId = `rune-grain-${hashSeed(JSON.stringify(composition.params)).toString(16)}`;
-  const grain = ballpoint ? `<defs><filter id="${filterId}" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB"><feTurbulence type="fractalNoise" baseFrequency="1.15" numOctaves="2" seed="17" result="paperNoise"/><feColorMatrix in="paperNoise" type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 16 0 -4.3" result="grainAlpha"/><feComposite in="SourceGraphic" in2="grainAlpha" operator="in" result="grainInk"/><feDisplacementMap in="grainInk" in2="paperNoise" scale="${GRAIN_DISPLACEMENT}" xChannelSelector="R" yChannelSelector="G"/></filter></defs>` : '';
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}" role="img" aria-label="${escapeAttribute(runeSummary(composition.params))}" focusable="false">` +
-    (variable ? gradientDefs() : '') + grain +
-    `<g${ballpoint ? ` filter="url(#${filterId})"` : ''} fill="none" stroke="${ink}" color="${variable ? variableGradientStops[0] : ink}" stroke-width="${n(RUNE_STROKE_WIDTH / RUNE_SCALE)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${C} ${C}) scale(${RUNE_SCALE}) translate(${-C} ${-C})">${glyphFill}</g></svg>`
+    (variable ? gradientDefs() : '') +
+    `<g fill="none" stroke="${ink}" color="${variable ? variableGradientStops[0] : ink}" stroke-width="${n(RUNE_STROKE_WIDTH / RUNE_SCALE)}" stroke-linecap="round" stroke-linejoin="round" transform="translate(${C} ${C}) scale(${RUNE_SCALE}) translate(${-C} ${-C})">${glyphFill}</g></svg>`
   );
 }
 
